@@ -11,7 +11,8 @@ class GTMEstimator(nn.Module):
     Source: https://www.microsoft.com/en-us/research/wp-content/uploads/1998/01/bishop-gtm-ncomp-98.pdf
     """
 
-    def __init__(self, in_features=None, out_features=None, n_x_points=100, verbose=False, y=None, method="mean"):
+    def __init__(self, in_features=None, out_features=None, n_x_points=100, verbose=False, y=None, method="mean",
+                 lmbd=0, cuda=False):
         """
         Initialisation:
         Creates Class instance.
@@ -27,13 +28,21 @@ class GTMEstimator(nn.Module):
         assert not (isinstance(in_features, type(None)) or isinstance(out_features, type(None))), \
             'You must provide sizes for hidden and variable dimension'
 
+        if cuda:
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+
         self.in_features = in_features
         self.out_features = out_features
+        self.lmbd = lmbd
+
         if isinstance(y, type(None)):
             self.y = nn.Linear(in_features, out_features)
 
         self.y = y
-        self.betta = torch.rand(1, requires_grad=True)
+
+        self.betta = torch.rand(1, requires_grad=True, device=self.device)
 
         self.grid = self.get_grid(n_x_points)
         self.verbose = verbose
@@ -43,11 +52,6 @@ class GTMEstimator(nn.Module):
 
         self.method = method
 
-        if sys.platform.startswith('win'):
-            self.cmd = "clr"
-        else:
-            self.cmd = "clear"
-
     def get_grid(self, n_points):
         """
         Initializing basis grid for likelihood estimation
@@ -55,9 +59,10 @@ class GTMEstimator(nn.Module):
         :param n_points: size of the grid in the latent space
         :return: grid in the form of flattened torch tensor
         """
-
         grid = torch.meshgrid(*[torch.linspace(0, 1, n_points) for _ in range(self.in_features)])
-        return torch.stack([t.flatten() for t in grid]).T
+        grid = torch.stack([t.flatten() for t in grid]).T.to(self.device)
+
+        return grid
 
     def train_epoch(self, X, batch_size=256):
         """
@@ -83,7 +88,21 @@ class GTMEstimator(nn.Module):
             exp = torch.exp(dist)
             p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
             p_x = torch.mean(p, dim=0)
-            loss = (-1*torch.log(p_x)).sum(dim=0)
+            loss = (-1 * torch.log(p_x)).sum(dim=0)
+
+            if self.lmbd:
+                for params in self.y.parameters():
+                    if len(params.size()) == 2:
+                        D1, D2 = params.size()
+                        M = D1 * D2
+                    else:
+                        D1, = params.size()
+                        M = D1
+
+                    reg = torch.sum(torch.pow(params, 2))
+                    exp_reg = torch.exp((-self.lmbd / 2) * reg)
+                    p_w = exp_reg * (self.lmbd / (2 * math.pi)) ** (M / 2)
+                    loss += -1 * p_w
 
             loss.backward()
             self.betta_opt.step()
@@ -110,9 +129,7 @@ class GTMEstimator(nn.Module):
             l_h.extend(self.train_epoch(X, batch_size))
 
             if self.verbose:
-                os.system(self.cmd)
-
-                print('epoch #{}: likelihood: {:.3f} betta: {:.3f}'.format(i + 1,  l_h[-1], self.betta.item()))
+                print('epoch #{}: likelihood: {:.3f} betta: {:.3f}'.format(i + 1, l_h[-1], self.betta.item()))
 
         return l_h
 
@@ -132,10 +149,10 @@ class GTMEstimator(nn.Module):
             dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), X), 2)
             exp = torch.exp(dist)
             p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
-            p_x = p/p.sum(dim=0)
+            p_x = p / p.sum(dim=0)
 
             if self.method == 'mean':
-                return (self.grid.T@p_x).T
+                return (self.grid.T @ p_x).T
 
             elif self.method == 'mode':
                 return self.grid[p_x.argmax(dim=0), :]
@@ -152,7 +169,6 @@ class GTMEstimator(nn.Module):
 
 
 if __name__ == "__main__":
-
     in_features = 2
     hidden_features = 8
     out_features = 4
