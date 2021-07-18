@@ -92,8 +92,9 @@ class GTMEstimator(nn.Module):
             dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), batch), 2)
             exp = torch.exp(dist)
             p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
-            p_x = torch.mean(p, dim=0)
-            loss = (torch.clip(-1 * torch.log(p_x), min=torch.finfo(p.dtype).min)).sum(dim=0)
+            p_x = torch.clip(torch.mean(p, dim=0), min=1e-20)
+            
+            loss = -1 * torch.log(p_x).sum(dim=0)
 
             if self.lmbd:
                 for params in self.y.parameters():
