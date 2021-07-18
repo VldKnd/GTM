@@ -178,7 +178,7 @@ class GTMEstimator(nn.Module):
 
 if __name__ == "__main__":
     in_features = 2
-    hidden_features = 8
+    hidden_features = 12
     out_features = 4
 
     y = nn.Sequential(
