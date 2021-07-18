@@ -48,9 +48,12 @@ class GTMEstimator(nn.Module):
         self.verbose = verbose
 
         self.betta_opt = torch.optim.Adam([self.betta])
-        self.y_opt = torch.optim.Adam(self.y.parameters(), lr=1e-1)
+        self.y_opt = torch.optim.Adam(self.y.parameters())
 
         self.method = method
+
+        self.mean = 0
+        self.std = 1
 
     def get_grid(self, n_points):
         """
@@ -76,6 +79,8 @@ class GTMEstimator(nn.Module):
         l_h = []  # Loss history
         n_x_variable, D = X.size()
 
+        X = (X - self.mean)/self.std
+
         for i in range(math.ceil(n_x_variable / batch_size)):
             self.y.zero_grad()
             self.betta_opt.zero_grad()
@@ -88,7 +93,7 @@ class GTMEstimator(nn.Module):
             exp = torch.exp(dist)
             p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
             p_x = torch.mean(p, dim=0)
-            loss = (-1 * torch.log(p_x)).sum(dim=0)
+            loss = (torch.clip(-1 * torch.log(p_x), min=torch.finfo(p.dtype).min)).sum(dim=0)
 
             if self.lmbd:
                 for params in self.y.parameters():
@@ -125,6 +130,9 @@ class GTMEstimator(nn.Module):
 
         l_h = []
 
+        self.mean = X.mean(dim=0)
+        self.std = X.std(dim=0)
+
         for i in range(n_epochs):
             l_h.extend(self.train_epoch(X, batch_size))
 
@@ -141,12 +149,12 @@ class GTMEstimator(nn.Module):
         :return: Data in latent space
         """
 
-        assert self.method in ('mean', 'mode'), "Mode can be either mean or mode"
+        assert self.method in ('mean', 'mode'), "Mode can be either mean or mode."
 
         with torch.no_grad():
             n_x_variable, D = X.size()
 
-            dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), X), 2)
+            dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), (X - self.mean)/self.std), 2)
             exp = torch.exp(dist)
             p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
             p_x = p / p.sum(dim=0)
@@ -165,7 +173,7 @@ class GTMEstimator(nn.Module):
         :return: Data in variable space
         """
 
-        return self.y(H)
+        return (self.y(H) + self.mean)*self.std
 
 
 if __name__ == "__main__":
