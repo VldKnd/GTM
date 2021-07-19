@@ -142,7 +142,7 @@ class GTMEstimator(nn.Module):
 
         return l_h
 
-    def transform(self, X):
+    def transform(self, X, batch_size=256):
         """
         Performs mapping from variable space to latent space.
 
@@ -153,18 +153,25 @@ class GTMEstimator(nn.Module):
         assert self.method in ('mean', 'mode'), "Mode can be either mean or mode."
 
         with torch.no_grad():
+            tensor_list = []
             n_x_variable, D = X.size()
 
-            dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), (X - self.mean)/self.std), 2)
-            exp = torch.exp(dist)
-            p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
-            p_x = p / p.sum(dim=0)
+            
+            for i in range(math.ceil(n_x_variable / batch_size)):
+                dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), (X[i*batch_size:(i+1)*batch_size] - self.mean)/self.std), 2)
+                exp = torch.exp(dist)
+                p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
+                p_x = p / p.sum(dim=0)
 
-            if self.method == 'mean':
-                return (self.grid.T @ p_x).T
+                if self.method == 'mean':
+                    tensor_list.append( (self.grid.T @ p_x).T )
 
-            elif self.method == 'mode':
-                return self.grid[p_x.argmax(dim=0), :]
+                elif self.method == 'mode':
+                    tensor_list.append( self.grid[p_x.argmax(dim=0), :] )
+                    
+            return torch.cat(tensor_list, dim=0)
+
+
 
     def inverse_transform(self, H):
         """
