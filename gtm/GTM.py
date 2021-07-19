@@ -43,15 +43,16 @@ class GTMEstimator(nn.Module):
         self.y = y
 
         self.betta = torch.rand(1, requires_grad=True, device=self.device)
+        self.norm = nn.BatchNorm1d(out_features, momentum=0.5)
 
         self.grid = self.get_grid(n_x_points)
         self.verbose = verbose
 
         self.betta_opt = torch.optim.Adam([self.betta])
         self.y_opt = torch.optim.Adam(self.y.parameters())
+        self.norm_opt = torch.optim.Adam(self.norm.parameters())
 
         self.method = method
-
         self.mean = 0
         self.std = 1
 
@@ -79,14 +80,14 @@ class GTMEstimator(nn.Module):
         l_h = []  # Loss history
         n_x_variable, D = X.size()
 
-        X = (X - self.mean)/self.std
-
         for i in range(math.ceil(n_x_variable / batch_size)):
             self.y.zero_grad()
+            self.norm.zero_grad()
             self.betta_opt.zero_grad()
             self.y_opt.zero_grad()
+            self.norm_opt.zero_grad()
 
-            batch = X[i * batch_size:(i + 1) * batch_size]
+            batch = self.norm(X[i * batch_size:(i + 1) * batch_size])
             size, _ = batch.size()
 
             dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), batch), 2)
@@ -113,6 +114,7 @@ class GTMEstimator(nn.Module):
             loss.backward()
             self.betta_opt.step()
             self.y_opt.step()
+            self.norm_opt.step()
 
             l_h.append(loss.item() / size)
 
@@ -131,6 +133,7 @@ class GTMEstimator(nn.Module):
 
         l_h = []
 
+        self.train()
         self.mean = X.mean(dim=0)
         self.std = X.std(dim=0)
 
@@ -147,48 +150,48 @@ class GTMEstimator(nn.Module):
         Performs mapping from variable space to latent space.
 
         :param X: Data from variable space
+        :param batch_size: Size of the batch to use
         :return: Data in latent space
         """
 
         assert self.method in ('mean', 'mode'), "Mode can be either mean or mode."
-
+        self.eval()
         with torch.no_grad():
             tensor_list = []
             n_x_variable, D = X.size()
 
-            
             for i in range(math.ceil(n_x_variable / batch_size)):
-                dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), (X[i*batch_size:(i+1)*batch_size] - self.mean)/self.std), 2)
+                dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid),
+                                                                 self.norm(X[i*batch_size:(i+1)*batch_size]), 2))
                 exp = torch.exp(dist)
                 p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
                 p_x = p / p.sum(dim=0)
 
                 if self.method == 'mean':
-                    tensor_list.append( (self.grid.T @ p_x).T )
+                    tensor_list.append((self.grid.T @ p_x).T)
 
                 elif self.method == 'mode':
-                    tensor_list.append( self.grid[p_x.argmax(dim=0), :] )
+                    tensor_list.append(self.grid[p_x.argmax(dim=0), :] )
                     
             return torch.cat(tensor_list, dim=0)
-
-
 
     def inverse_transform(self, H, batch_size=256):
         """
         Performs mapping from latent space to variable space.
 
         :param H: Data from latent space
+        :param batch_size: Size of the batch to use
         :return: Data in variable space
         """
         
         assert self.method in ('mean', 'mode'), "Mode can be either mean or mode."
-
+        self.eval()
         with torch.no_grad():
             tensor_list = []
-            n_x_variable, D = X.size()
+            n_x_variable, D = H.size()
             
             for i in range(math.ceil(n_x_variable / batch_size)):
-                tensor_list.append((self.y(H[batch_size*i: batch_size*(i+1)]) + self.mean)*self.std)
+                tensor_list.append(self.y(self.norm(H[batch_size*i: batch_size*(i+1)])))
 
         return torch.cat(tensor_list, dim=0)
 
