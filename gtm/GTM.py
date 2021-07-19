@@ -173,15 +173,24 @@ class GTMEstimator(nn.Module):
 
 
 
-    def inverse_transform(self, H):
+    def inverse_transform(self, H, batch_size=256):
         """
         Performs mapping from latent space to variable space.
 
         :param H: Data from latent space
         :return: Data in variable space
         """
+        
+        assert self.method in ('mean', 'mode'), "Mode can be either mean or mode."
 
-        return (self.y(H) + self.mean)*self.std
+        with torch.no_grad():
+            tensor_list = []
+            n_x_variable, D = X.size()
+            
+            for i in range(math.ceil(n_x_variable / batch_size)):
+                tensor_list.append((self.y(H[batch_size*i: batch_size*(i+1)]) + self.mean)*self.std)
+
+        return torch.cat(tensor_list, dim=0)
 
 
 if __name__ == "__main__":
