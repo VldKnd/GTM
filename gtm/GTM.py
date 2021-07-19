@@ -37,9 +37,9 @@ class GTMEstimator(nn.Module):
         self.lmbd = lmbd
         self.W = nn.Sequential(nn.Linear(in_features, hidden_features),
                                nn.LeakyReLU(),
-                               nn.Linear(hidden_features, out_features))
+                               nn.Linear(hidden_features, out_features, bias=False))
         self.bnorm = nn.BatchNorm1d(out_features)
-        self.betta = torch.rand(1, requires_grad=True, device=self.device)
+        self.betta = torch.ones(1, requires_grad=True, device=self.device)
 
         self.grid = self.get_grid(map_points)
         self.verbose = verbose
