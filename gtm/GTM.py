@@ -3,6 +3,7 @@ import sys
 import math
 import torch
 import torch.nn as nn
+from typing import Optional
 
 
 class GTMEstimator(nn.Module):
@@ -11,51 +12,43 @@ class GTMEstimator(nn.Module):
     Source: https://www.microsoft.com/en-us/research/wp-content/uploads/1998/01/bishop-gtm-ncomp-98.pdf
     """
 
-    def __init__(self, in_features=None, out_features=None, n_x_points=100, verbose=False, y=None, method="mean",
-                 lmbd=0, cuda=False):
+    def __init__(self,  out_features: int, batch_size: int, in_features: Optional[int] = 2,
+                 hidden_features: Optional[int] = 64, map_points: int = 10, verbose: bool = False,
+                 lmbd: Optional[float] = None, cuda: bool=False):
         """
         Initialisation:
         Creates Class instance.
 
         :param in_features: Size of latent space
         :param out_features: Size of variable space
-        :param n_x_points: Size of basis grid
+        :param map_points: Size of basis grid
         :param verbose: If true, the training process will output intermediate information
-        :param y: Mapping function, has to be differentiable by pytorch.
         """
         super(GTMEstimator, self).__init__()
 
         assert not (isinstance(in_features, type(None)) or isinstance(out_features, type(None))), \
             'You must provide sizes for hidden and variable dimension'
-
         if cuda:
             self.device = torch.device('cuda')
         else:
             self.device = torch.device('cpu')
-
         self.in_features = in_features
         self.out_features = out_features
         self.lmbd = lmbd
-
-        if isinstance(y, type(None)):
-            self.y = nn.Linear(in_features, out_features)
-
-        self.y = y
-
+        self.W = nn.Sequential(nn.Linear(in_features, hidden_features),
+                               nn.LeakyReLU(),
+                               nn.Linear(hidden_features, out_features))
+        self.bnorm = nn.BatchNorm1d(out_features)
         self.betta = torch.rand(1, requires_grad=True, device=self.device)
 
-        self.grid = self.get_grid(n_x_points)
+        self.grid = self.get_grid(map_points)
         self.verbose = verbose
 
         self.betta_opt = torch.optim.Adam([self.betta])
-        self.y_opt = torch.optim.Adam(self.y.parameters())
+        self.w_opt = torch.optim.Adam(self.W.parameters(), lr=0.01)
+        self.batch_size = batch_size
 
-        self.method = method
-
-        self.mean = 0
-        self.std = 1
-
-    def get_grid(self, n_points):
+    def get_grid(self, n_points): # square grid only
         """
         Initializing basis grid for likelihood estimation
 
@@ -67,7 +60,11 @@ class GTMEstimator(nn.Module):
 
         return grid
 
-    def train_epoch(self, X, batch_size=256):
+    def loss(self, p):
+        p_x = torch.mean(p, dim=0)
+        return (torch.clip(-1 * torch.log(p_x), min=torch.finfo(p.dtype).min)).sum(dim=0)
+
+    def train_batch(self, batch):
         """
         Training function, to estimate the distributions sigma and mapping weights.
 
@@ -76,94 +73,59 @@ class GTMEstimator(nn.Module):
         :return: history of losses
         """
 
-        l_h = []  # Loss history
-        n_x_variable, D = X.size()
+        self.train()
+        self.W.zero_grad()
+        self.betta_opt.zero_grad()
+        self.w_opt.zero_grad()
+        p = self.forward(batch)
+        loss = self.loss(p)
+        if self.lmbd:
+            for params in self.y.parameters():
+                if len(params.size()) == 2:
+                    D1, D2 = params.size()
+                    M = D1 * D2
+                else:
+                    D1, = params.size()
+                    M = D1
 
-        X = (X - self.mean)/self.std
+                reg = torch.sum(torch.pow(params, 2))
+                exp_reg = torch.exp((-self.lmbd / 2) * reg)
+                p_w = exp_reg * (self.lmbd / (2 * math.pi)) ** (M / 2)
+                loss += -1 * p_w
 
-        for i in range(math.ceil(n_x_variable / batch_size)):
-            self.y.zero_grad()
-            self.betta_opt.zero_grad()
-            self.y_opt.zero_grad()
+        loss.backward()
+        self.betta_opt.step()
+        self.w_opt.step()
+        return loss.detach()
 
-            batch = X[i * batch_size:(i + 1) * batch_size]
-            size, _ = batch.size()
+    def train_epoch(self, X):
+        loss = []
+        for i in range(math.ceil(X.shape[0]/self.batch_size)):
+            batch = X[self.batch_size*i:self.batch_size*(i+1)]
+            loss.append(self.train_batch(batch))
+        return loss
 
-            dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), batch), 2)
-            exp = torch.exp(dist)
-            p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
-            p_x = torch.mean(p, dim=0)
-            loss = (torch.clip(-1 * torch.log(p_x), min=torch.finfo(p.dtype).min)).sum(dim=0)
-
-            if self.lmbd:
-                for params in self.y.parameters():
-                    if len(params.size()) == 2:
-                        D1, D2 = params.size()
-                        M = D1 * D2
-                    else:
-                        D1, = params.size()
-                        M = D1
-
-                    reg = torch.sum(torch.pow(params, 2))
-                    exp_reg = torch.exp((-self.lmbd / 2) * reg)
-                    p_w = exp_reg * (self.lmbd / (2 * math.pi)) ** (M / 2)
-                    loss += -1 * p_w
-
-            loss.backward()
-            self.betta_opt.step()
-            self.y_opt.step()
-
-            l_h.append(loss.item() / size)
-
-        return l_h
-
-    def train_epochs(self, X, n_epochs=1, batch_size=256):
-        """
-        Training function, to estimate the distributions sigma and mapping weights.
-        Runs one epoch procedure `n_epochs` times.
-
-        :param X: Data from variable space
-        :param n_epochs: number of epochs to run
-        :param batch_size: size of training batches
-        :return: history of losses
-        """
-
-        l_h = []
-
-        self.mean = X.mean(dim=0)
-        self.std = X.std(dim=0)
-
-        for i in range(n_epochs):
-            l_h.extend(self.train_epoch(X, batch_size))
-
-            if self.verbose:
-                print('epoch #{}: likelihood: {:.3f} betta: {:.3f}'.format(i + 1, l_h[-1], self.betta.item()))
-
-        return l_h
-
-    def transform(self, X):
+    def transform(self, X, method: str = 'mean'):
         """
         Performs mapping from variable space to latent space.
 
         :param X: Data from variable space
+        :param method: Defines projection type. Mean - using mean responsibility in grid
+         gives mean position in latent dim,
+         node - using max value of responsibility gives discrete position in latent dim.
         :return: Data in latent space
         """
 
-        assert self.method in ('mean', 'mode'), "Mode can be either mean or mode."
-
+        assert method in ('mean', 'node'), "Mode can be either mean or node."
+        self.eval()
         with torch.no_grad():
-            n_x_variable, D = X.size()
-
-            dist = (-self.betta / 2) * torch.pow(torch.cdist(self.y(self.grid), (X - self.mean)/self.std), 2)
-            exp = torch.exp(dist)
-            p = torch.pow(self.betta / (2 * math.pi), D / 2) * exp
+            p = self.forward(X)
             p_x = p / p.sum(dim=0)
+            if method == 'mean':
+                return (self.grid.T @ p_x).T.detach()
 
-            if self.method == 'mean':
-                return (self.grid.T @ p_x).T
-
-            elif self.method == 'mode':
-                return self.grid[p_x.argmax(dim=0), :]
+            elif method == 'node':
+                return self.grid[p_x.argmax(dim=0), :].detach()
 
     def inverse_transform(self, H):
         """
@@ -172,24 +134,12 @@ class GTMEstimator(nn.Module):
         :param H: Data from latent space
         :return: Data in variable space
         """
+        self.eval()
+        return ((self.W(H) + self.bnorm.running_mean)*self.bnorm.running_var).detach()
 
-        return (self.y(H) + self.mean)*self.std
-
-
-if __name__ == "__main__":
-    in_features = 2
-    hidden_features = 12
-    out_features = 4
-
-    y = nn.Sequential(
-        nn.Linear(in_features, hidden_features),
-        nn.ReLU(),
-        nn.Linear(hidden_features, hidden_features),
-        nn.ReLU(),
-        nn.Linear(hidden_features, out_features))
-
-    est = GTMEstimator(in_features=in_features, out_features=out_features, n_x_points=3, verbose=True, y=y)
-
-    Df = torch.rand(1024, 4)
-    est.train_epochs(Df, 1000)
-    output = (est.transform(Df)).numpy()
+    def forward(self, x):
+        x = self.bnorm(x)
+        dist = (-self.betta / 2) * torch.pow(torch.cdist(self.W(self.grid), x), 2)
+        exp = torch.exp(dist)
+        p = torch.pow(self.betta / (2 * math.pi), self.out_features / 2) * exp
+        return p
