@@ -5,6 +5,9 @@ __pycache__
 */__pycache__/*
 gtm/__pycache__
 
+#Pycharm
+.idea
+
 #MacOS
 .DS_Store
 */.DS_Store/*
