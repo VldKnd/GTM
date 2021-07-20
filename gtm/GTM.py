@@ -43,14 +43,13 @@ class GTMEstimator(nn.Module):
         self.y = y
 
         self.betta = torch.rand(1, requires_grad=True, device=self.device)
-        self.norm = nn.BatchNorm1d(out_features, momentum=0.5)
+        self.norm = nn.BatchNorm1d(out_features, affine=False).to(self.device)
 
         self.grid = self.get_grid(n_x_points)
         self.verbose = verbose
 
         self.betta_opt = torch.optim.Adam([self.betta])
         self.y_opt = torch.optim.Adam(self.y.parameters())
-        self.norm_opt = torch.optim.Adam(self.norm.parameters())
 
         self.method = method
         self.mean = 0
@@ -64,7 +63,8 @@ class GTMEstimator(nn.Module):
         :return: grid in the form of flattened torch tensor
         """
         grid = torch.meshgrid(*[torch.linspace(0, 1, n_points) for _ in range(self.in_features)])
-        grid = torch.stack([t.flatten() for t in grid]).T.to(self.device)
+        grid = torch.stack([t.flatten() for t in grid]).T.to(self.device) - 0.5
+
 
         return grid
 
